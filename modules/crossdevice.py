@@ -306,7 +306,8 @@ class CrossDeviceModule:
 
     def analyze_funnel(self, funnel_definition: List[Dict[str, Any]],
                        start_time: float = None,
-                       end_time: float = None) -> Dict[str, Any]:
+                       end_time: float = None,
+                       require_sequence: bool = True) -> Dict[str, Any]:
         events = self.storage.get_events()
         if start_time:
             events = [e for e in events if e['timestamp'] >= start_time]
@@ -318,7 +319,7 @@ class CrossDeviceModule:
             user_events[event['user_id']].append(event)
 
         funnel_result = []
-        previous_count = None
+        step_user_events: Dict[int, Dict[str, float]] = {}
 
         for idx, step in enumerate(funnel_definition):
             step_name = step.get('name', f"step_{idx}")
@@ -326,29 +327,52 @@ class CrossDeviceModule:
             device_type = step.get('device_type')
             product_line = step.get('product_line')
 
-            matching_users = set()
-            for uid, evts in user_events.items():
-                for event in evts:
-                    match = True
-                    if event_name and event['event_name'] != event_name:
-                        match = False
-                    if device_type and event.get('device_type') != device_type:
-                        match = False
-                    if product_line and event.get('product_line') != product_line:
-                        match = False
-                    
-                    if match:
-                        matching_users.add(uid)
-                        break
+            matching_users: Dict[str, float] = {}
+            
+            if require_sequence and idx > 0:
+                prev_step_users = step_user_events.get(idx - 1, {})
+                for uid, prev_ts in prev_step_users.items():
+                    evts = user_events.get(uid, [])
+                    evts = sorted(evts, key=lambda e: e['timestamp'])
+                    for event in evts:
+                        if event['timestamp'] <= prev_ts:
+                            continue
+                        match = True
+                        if event_name and event['event_name'] != event_name:
+                            match = False
+                        if device_type and event.get('device_type') != device_type:
+                            match = False
+                        if product_line and event.get('product_line') != product_line:
+                            match = False
+                        if match:
+                            matching_users[uid] = event['timestamp']
+                            break
+            else:
+                for uid, evts in user_events.items():
+                    evts = sorted(evts, key=lambda e: e['timestamp'])
+                    for event in evts:
+                        match = True
+                        if event_name and event['event_name'] != event_name:
+                            match = False
+                        if device_type and event.get('device_type') != device_type:
+                            match = False
+                        if product_line and event.get('product_line') != product_line:
+                            match = False
+                        if match:
+                            matching_users[uid] = event['timestamp']
+                            break
+
+            step_user_events[idx] = matching_users
 
             count = len(matching_users)
+            previous_count = len(step_user_events[idx - 1]) if idx > 0 else None
             conversion_rate = None
             if previous_count is not None and previous_count > 0:
                 conversion_rate = round(count / previous_count, 4)
 
             overall_rate = None
-            if funnel_result and funnel_result[0]['count'] > 0:
-                overall_rate = round(count / funnel_result[0]['count'], 4)
+            if funnel_result and len(step_user_events[0]) > 0:
+                overall_rate = round(count / len(step_user_events[0]), 4)
 
             funnel_result.append({
                 "step_index": idx,
@@ -359,10 +383,9 @@ class CrossDeviceModule:
                 "count": count,
                 "conversion_from_prev": conversion_rate,
                 "conversion_from_start": overall_rate,
-                "users": list(matching_users)
+                "users": list(matching_users.keys()),
+                "user_timestamps": matching_users
             })
-
-            previous_count = count
 
         cross_device_analysis = self._analyze_funnel_cross_device(
             funnel_definition, user_events, funnel_result
@@ -397,24 +420,25 @@ class CrossDeviceModule:
             cross_device = 0
             transitions = defaultdict(int)
             
+            step1_timestamps = funnel_result[i].get('user_timestamps', {}) if i < len(funnel_result) else {}
+            step2_timestamps = funnel_result[i + 1].get('user_timestamps', {}) if (i + 1) < len(funnel_result) else {}
+            
             for uid in completed_users:
-                evts = sorted(user_events[uid], key=lambda e: e['timestamp'])
-                
                 device1 = None
-                for event in evts:
-                    if event['event_name'] == step1.get('event_name'):
-                        if not step1.get('device_type') or event.get('device_type') == step1.get('device_type'):
+                ts1 = step1_timestamps.get(uid)
+                if ts1:
+                    evts = sorted(user_events[uid], key=lambda e: e['timestamp'])
+                    for event in evts:
+                        if abs(event['timestamp'] - ts1) < 0.001:
                             device1 = event.get('device_type')
                             break
                 
                 device2 = None
-                found_step1 = False
-                for event in evts:
-                    if not found_step1 and event['event_name'] == step1.get('event_name'):
-                        found_step1 = True
-                        continue
-                    if found_step1 and event['event_name'] == step2.get('event_name'):
-                        if not step2.get('device_type') or event.get('device_type') == step2.get('device_type'):
+                ts2 = step2_timestamps.get(uid)
+                if ts2:
+                    evts = sorted(user_events[uid], key=lambda e: e['timestamp'])
+                    for event in evts:
+                        if abs(event['timestamp'] - ts2) < 0.001:
                             device2 = event.get('device_type')
                             break
                 

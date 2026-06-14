@@ -10,35 +10,149 @@ from .cohort import CohortModule
 NEGATIVE_KEYWORDS = {'退款', '注销', '取消', '投诉', '不满', '太差', '垃圾', '不好'}
 POSITIVE_KEYWORDS = {'好评', '推荐', '满意', '喜欢', '棒', '赞', '优秀'}
 
+DEVICE_ALIASES = {
+    'ios': 'ios', 'IOS': 'ios', 'iOS': 'ios', '苹果': 'ios',
+    'android': 'android', 'ANDROID': 'android', '安卓': 'android',
+    'web': 'web', 'WEB': 'web', 'h5': 'web', 'H5': 'web',
+    'mp': 'mp', 'MP': 'mp', 'wechat': 'mp', 'weixin': 'mp', '小程序': 'mp',
+    'wx': 'wx', 'WX': 'wx', 'official': 'wx', '公众号': 'wx',
+}
+
+VALID_DEVICES = {'ios', 'android', 'web', 'mp', 'wx'}
+
 class SegmentExpressionParser:
     _OPERATORS = {
-        'AND': all,
-        'OR': any,
-        'and': all,
-        'or': any,
+        'AND': all, 'and': all, '且': all, '并且': all,
+        'OR': any, 'or': any, '或': any, '或者': any,
     }
     
     _COMPARISONS = {
-        '>': operator.gt,
-        '<': operator.lt,
-        '>=': operator.ge,
-        '<=': operator.le,
-        '==': operator.eq,
-        '!=': operator.ne,
-        '=': operator.eq,
+        '>': operator.gt, '大于': operator.gt, '超过': operator.gt, '多于': operator.gt, 'more_than': operator.gt,
+        '<': operator.lt, '小于': operator.lt, '低于': operator.lt, '少于': operator.lt, 'less_than': operator.lt,
+        '>=': operator.ge, '大于等于': operator.ge, '不少于': operator.ge, '至少': operator.ge, '不低于': operator.ge, 'at_least': operator.ge,
+        '<=': operator.le, '小于等于': operator.le, '不多于': operator.le, '至多': operator.le, '不超过': operator.le, 'at_most': operator.le,
+        '==': operator.eq, '=': operator.eq, '等于': operator.eq, '=': operator.eq,
+        '!=': operator.ne, '不等于': operator.ne,
         'contains': lambda a, b: b in str(a).lower() if a else False,
-        'in': lambda a, b: a in b,
-        'not in': lambda a, b: a not in b,
+        'in': lambda a, b: a in b if isinstance(b, (list, set, tuple)) else a == b,
+        'not in': lambda a, b: a not in b if isinstance(b, (list, set, tuple)) else a != b,
     }
 
     def __init__(self):
         self.storage = MemoryStorage()
 
+    def _normalize_device(self, device: str) -> Optional[str]:
+        if not device:
+            return None
+        device = device.strip().strip('"\'')
+        return DEVICE_ALIASES.get(device, device.lower())
+
+    def _preprocess_expression(self, expression: str) -> str:
+        expr = ' ' + expression.strip() + ' '
+        
+        expr = re.sub(r'过去\s*(\d+)\s*天', r' past \1 days ', expr)
+        expr = re.sub(r'最近\s*(\d+)\s*天', r' past \1 days ', expr)
+        expr = re.sub(r'近\s*(\d+)\s*天', r' past \1 days ', expr)
+        
+        def replace_device_multi(match):
+            device_part = match.group(1).strip()
+            device_part = device_part.replace('，', ',').strip()
+            return f' in [{device_part}] '
+        
+        def replace_device_single(match):
+            device_part = match.group(1).strip()
+            device_part = device_part.strip('"\'').strip()
+            return f" in '{device_part}' "
+        
+        expr = re.sub(r'在\s*\(\s*([^)]+?)\s*\)\s*端', replace_device_multi, expr)
+        expr = re.sub(r'在\s*\[([^\]]+?)\]\s*端', replace_device_multi, expr)
+        expr = re.sub(r'在\s*(\S+?)\s*端', replace_device_single, expr)
+        
+        expr = re.sub(r'浏览过', r' event_count "page_view" ', expr)
+        expr = re.sub(r'浏览了', r' event_count "page_view" ', expr)
+        
+        expr = re.sub(r'完成过至少\s*(\d+)\s*次订单', lambda m: f' event_count "order_completed" >= {m.group(1)} ', expr)
+        expr = re.sub(r'完成了\s*(\d+)\s*次订单', lambda m: f' event_count "order_completed" >= {m.group(1)} ', expr)
+        expr = re.sub(r'完成过订单', r' event_count "order_completed" >= 1 ', expr)
+        expr = re.sub(r'完成过至少\s*(\d+)\s*次', lambda m: f' >= {m.group(1)} ', expr)
+        
+        expr = re.sub(r'加购过', r' event_count "add_to_cart" ', expr)
+        expr = re.sub(r'登录过', r' event_count "login" ', expr)
+        
+        expr = re.sub(r'有\s*(\d+)\s*次以上', lambda m: f' > {m.group(1)} ', expr)
+        expr = re.sub(r'有\s*(\d+)\s*次', lambda m: f' >= {m.group(1)} ', expr)
+        expr = re.sub(r'至少\s*(\d+)\s*次', lambda m: f' >= {m.group(1)} ', expr)
+        expr = re.sub(r'不少于\s*(\d+)\s*次', lambda m: f' >= {m.group(1)} ', expr)
+        expr = re.sub(r'超过\s*(\d+)\s*次', lambda m: f' > {m.group(1)} ', expr)
+        expr = re.sub(r'多于\s*(\d+)\s*次', lambda m: f' > {m.group(1)} ', expr)
+        expr = re.sub(r'少于\s*(\d+)\s*次', lambda m: f' < {m.group(1)} ', expr)
+        expr = re.sub(r'至多\s*(\d+)\s*次', lambda m: f' <= {m.group(1)} ', expr)
+        
+        expr = re.sub(r'\b且\b', ' AND ', expr)
+        expr = re.sub(r'\b并且\b', ' AND ', expr)
+        expr = re.sub(r'\b或\b', ' OR ', expr)
+        expr = re.sub(r'\b或者\b', ' OR ', expr)
+        
+        expr = re.sub(r'\s+', ' ', expr).strip()
+        
+        return expr
+
+    def _parse_condition(self, condition_str: str) -> Optional[Dict[str, Any]]:
+        condition_str = condition_str.strip()
+        if not condition_str:
+            return None
+        
+        pattern = (
+            r'(?:past|过去)\s+(\d+)\s+(?:days|天)'
+            r'(?:\s+in\s+(.+?))?'
+            r'\s+(?:event_count|has|completed|有|浏览过|完成过)'
+            r'\s+(.+?)(?=\s*(?:>=|<=|>|<|==|!=|=|至少|大于|小于|不少于|不多于|超过|少于|等于|不等于))'
+            r'\s*(>=|<=|>|<|==|!=|=|至少|大于|小于|不少于|不多于|超过|少于|等于|不等于)'
+            r'\s*(\d+)'
+        )
+        
+        match = re.match(pattern, condition_str, re.IGNORECASE)
+        if match:
+            days = int(match.group(1))
+            device_spec = match.group(2)
+            event_name = match.group(3).strip().strip('"\'').lower()
+            op = match.group(4).strip()
+            threshold = int(match.group(5))
+            
+            devices = None
+            if device_spec:
+                device_spec = device_spec.strip()
+                device_match = re.match(r'^\s*[\[\(\{](.+)[\]\)\}]\s*$', device_spec)
+                if device_match:
+                    device_list = [d.strip().strip('"\'') for d in device_match.group(1).replace('，', ',').split(',')]
+                    devices = [self._normalize_device(d) for d in device_list if self._normalize_device(d) in VALID_DEVICES]
+                else:
+                    single_device = self._normalize_device(device_spec.strip().strip('"\''))
+                    if single_device and single_device in VALID_DEVICES:
+                        devices = [single_device]
+            
+            op_lower = op.lower()
+            for op_key in self._COMPARISONS:
+                if op_lower == op_key.lower():
+                    op = op_key
+                    break
+            
+            return {
+                'type': 'event_count',
+                'days': days,
+                'devices': devices,
+                'event_name': event_name,
+                'operator': op,
+                'threshold': threshold
+            }
+        
+        return None
+
     def _tokenize(self, expression: str) -> List[str]:
         tokens = []
         i = 0
         while i < len(expression):
-            if expression[i] in '()':
+            if expression[i] in '()[],':
                 tokens.append(expression[i])
                 i += 1
             elif expression[i].isspace():
@@ -50,9 +164,15 @@ class SegmentExpressionParser:
                     j += 1
                 tokens.append(expression[i:j+1])
                 i = j + 1
+            elif expression[i] in '>!=<':
+                j = i
+                while j < len(expression) and expression[j] in '>!=<':
+                    j += 1
+                tokens.append(expression[i:j])
+                i = j
             else:
                 j = i
-                while j < len(expression) and not expression[j].isspace() and expression[j] not in '()':
+                while j < len(expression) and not expression[j].isspace() and expression[j] not in '()[],<>!=':
                     j += 1
                 tokens.append(expression[i:j])
                 i = j
@@ -60,54 +180,65 @@ class SegmentExpressionParser:
 
     def validate_expression(self, expression: str) -> Dict[str, Any]:
         try:
-            tokens = self._tokenize(expression)
+            processed = self._preprocess_expression(expression)
             
-            valid_conditions = [
-                'event_count',
-                'past',
-                'days',
-                'in',
-                'device_type',
-                'product_line',
-                'event_name',
-                'completed',
-                'at_least',
-                'more_than',
-                'less_than',
-                'times',
-                'AND',
-                'OR',
-                'and',
-                'or',
-                '>',
-                '<',
-                '>=',
-                '<=',
-                '==',
-                '!=',
-                '=',
-                'contains',
-                'not',
-            ]
+            tokens = self._tokenize(processed)
             
-            pattern = r"past\s+\d+\s+days(\s+in\s+['\"]\w+['\"])?\s+(event_count|completed|has)\s+['\"]\w+['\"]\s*([><=!]+\s*\d+|(at_least|more_than|less_than)\s+\d+\s+times?|at_least\s+\d+\s+['\"]\w+['\"])"
-            full_pattern = r"^\s*(" + pattern + r")(\s+(AND|OR)\s+" + pattern + r")*\s*$"
+            conditions = []
+            operators = []
+            i = 0
             
-            import re
-            if not re.match(full_pattern, expression, re.IGNORECASE):
+            while i < len(tokens):
+                token = tokens[i]
+                
+                if token.upper() in ['AND', 'OR']:
+                    operators.append(token.upper())
+                    i += 1
+                elif token in '()[],':
+                    i += 1
+                elif token.lower() in ['past', '过去']:
+                    condition_tokens = [token]
+                    i += 1
+                    while i < len(tokens) and tokens[i].upper() not in ['AND', 'OR'] and tokens[i] not in '()':
+                        condition_tokens.append(tokens[i])
+                        i += 1
+                    
+                    condition_str = ' '.join(condition_tokens)
+                    condition = self._parse_condition(condition_str)
+                    
+                    if condition:
+                        conditions.append(condition)
+                    else:
+                        return {
+                            "valid": False,
+                            "error": f"无法解析条件: {condition_str}",
+                            "suggestion": "请检查格式，例如: 过去30天在'ios'端浏览过至少3次 AND 在'web'端完成过至少1次订单"
+                        }
+                else:
+                    i += 1
+            
+            if not conditions:
                 return {
                     "valid": False,
-                    "error": "Expression syntax invalid. Does not match expected pattern.",
-                    "suggestion": "Example: past 30 days in 'ios' event_count 'page_view' > 3 AND past 30 days in 'web' event_count 'order_completed' >= 1"
+                    "error": "未找到有效的查询条件",
+                    "suggestion": "示例1: past 30 days in 'ios' event_count 'page_view' >= 3 AND past 30 days in 'web' event_count 'order_completed' >= 1\n示例2: 过去30天在'ios'端浏览过至少3次 且 在'web'端完成过至少1次订单"
                 }
             
-            return {"valid": True}
+            expected_operators = len(conditions) - 1
+            if len(operators) != expected_operators and len(conditions) > 1:
+                return {
+                    "valid": False,
+                    "error": f"条件与运算符数量不匹配: {len(conditions)}个条件需要 {expected_operators} 个运算符，当前有 {len(operators)} 个",
+                    "suggestion": "请使用 AND/且 或 OR/或 连接多个条件"
+                }
+            
+            return {"valid": True, "processed": processed, "conditions": conditions, "operators": operators}
             
         except Exception as e:
             return {
                 "valid": False,
-                "error": f"Expression syntax error: {str(e)}",
-                "suggestion": "Check expression syntax. Example: past 30 days in 'ios' event_count 'page_view' > 3 AND past 30 days in 'web' event_count 'order_completed' >= 1"
+                "error": f"表达式语法错误: {str(e)}",
+                "suggestion": "示例1: past 30 days in 'ios' event_count 'page_view' >= 3 AND past 30 days in 'web' event_count 'order_completed' >= 1\n示例2: 过去30天在'ios'端浏览过至少3次 且 在'web'端完成过至少1次订单"
             }
 
     def parse_expression(self, expression: str) -> Optional[Callable[[str], bool]]:
@@ -116,124 +247,51 @@ class SegmentExpressionParser:
             return None
         
         try:
+            conditions = validation.get("conditions", [])
+            operators = validation.get("operators", [])
+            
             def evaluate(user_id: str) -> bool:
-                return self._evaluate_expression(expression, user_id)
+                now = self.storage.get_effective_now()
+                results = []
+                
+                for cond in conditions:
+                    start_time = now - cond['days'] * 86400
+                    filters = {
+                        "user_id": user_id,
+                        "event_name": cond['event_name'],
+                        "timestamp": lambda t: t >= start_time
+                    }
+                    
+                    if cond['devices']:
+                        filters["device_type"] = cond['devices']
+                    
+                    events = self.storage.get_events(filters)
+                    count = len(events)
+                    
+                    op_func = self._COMPARISONS.get(cond['operator'])
+                    if op_func:
+                        results.append(op_func(count, cond['threshold']))
+                    else:
+                        results.append(False)
+                
+                if not results:
+                    return False
+                if len(results) == 1:
+                    return results[0]
+                
+                final_result = results[0]
+                for i, op in enumerate(operators):
+                    op_func = self._OPERATORS.get(op, all)
+                    if op == 'AND' or op == '且':
+                        final_result = final_result and results[i + 1]
+                    elif op == 'OR' or op == '或':
+                        final_result = final_result or results[i + 1]
+                
+                return final_result
+            
             return evaluate
         except Exception:
             return None
-
-    def _evaluate_expression(self, expression: str, user_id: str) -> bool:
-        now = datetime.now().timestamp()
-        
-        pattern = r"(past\s+(\d+)\s+days\s+(?:in\s+['\"](\w+)['\"]\s+)?event_count\s+['\"](\w+)['\"]\s*([><=!]+)\s*(\d+))"
-        
-        def replace_condition(match):
-            full = match.group(1)
-            days = int(match.group(2))
-            device = match.group(3)
-            event_name = match.group(4)
-            op = match.group(5)
-            threshold = int(match.group(6))
-            
-            start_time = now - days * 86400
-            filters = {
-                "user_id": user_id,
-                "event_name": event_name,
-                "timestamp": lambda t: t >= start_time
-            }
-            if device:
-                filters["device_type"] = device
-            
-            events = self.storage.get_events(filters)
-            count = len(events)
-            
-            if op == '>':
-                result = count > threshold
-            elif op == '<':
-                result = count < threshold
-            elif op == '>=':
-                result = count >= threshold
-            elif op == '<=':
-                result = count <= threshold
-            elif op in ['==', '=']:
-                result = count == threshold
-            elif op == '!=':
-                result = count != threshold
-            else:
-                result = False
-            
-            return 'True' if result else 'False'
-        
-        pattern2 = r"(past\s+(\d+)\s+days\s+(?:in\s+['\"](\w+)['\"]\s+)?(?:completed|has)\s+['\"](\w+)['\"]\s+(at_least|more_than|less_than)\s+(\d+)\s+times)"
-        
-        def replace_condition2(match):
-            full = match.group(1)
-            days = int(match.group(2))
-            device = match.group(3)
-            event_name = match.group(4)
-            qualifier = match.group(5)
-            threshold = int(match.group(6))
-            
-            start_time = now - days * 86400
-            filters = {
-                "user_id": user_id,
-                "event_name": event_name,
-                "timestamp": lambda t: t >= start_time
-            }
-            if device:
-                filters["device_type"] = device
-            
-            events = self.storage.get_events(filters)
-            count = len(events)
-            
-            if qualifier == 'at_least':
-                result = count >= threshold
-            elif qualifier == 'more_than':
-                result = count > threshold
-            elif qualifier == 'less_than':
-                result = count < threshold
-            else:
-                result = False
-            
-            return 'True' if result else 'False'
-        
-        pattern3 = r"(past\s+(\d+)\s+days\s+(?:in\s+['\"](\w+)['\"]\s+)?(?:completed|has)\s+at_least\s+(\d+)\s+['\"](\w+)['\"])"
-        
-        def replace_condition3(match):
-            full = match.group(1)
-            days = int(match.group(2))
-            device = match.group(3)
-            threshold = int(match.group(4))
-            event_name = match.group(5)
-            
-            start_time = now - days * 86400
-            filters = {
-                "user_id": user_id,
-                "event_name": event_name,
-                "timestamp": lambda t: t >= start_time
-            }
-            if device:
-                filters["device_type"] = device
-            
-            events = self.storage.get_events(filters)
-            count = len(events)
-            result = count >= threshold
-            
-            return 'True' if result else 'False'
-        
-        eval_expr = expression
-        eval_expr = re.sub(pattern3, replace_condition3, eval_expr, flags=re.IGNORECASE)
-        eval_expr = re.sub(pattern2, replace_condition2, eval_expr, flags=re.IGNORECASE)
-        eval_expr = re.sub(pattern, replace_condition, eval_expr, flags=re.IGNORECASE)
-        
-        eval_expr = re.sub(r'\bAND\b', 'and', eval_expr, flags=re.IGNORECASE)
-        eval_expr = re.sub(r'\bOR\b', 'or', eval_expr, flags=re.IGNORECASE)
-        
-        try:
-            result = eval(eval_expr, {"__builtins__": {}}, {})
-            return bool(result)
-        except Exception:
-            return False
 
 
 class SegmentModule:

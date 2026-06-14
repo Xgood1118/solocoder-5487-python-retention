@@ -107,6 +107,18 @@ class CohortModule:
                 user_events[uid] = []
             user_events[uid].append(event['timestamp'])
 
+        if segment_by:
+            main_cohort_sizes: Dict[float, int] = {}
+            for user in users:
+                ts = self._truncate_time(user['first_active'], granularity)
+                main_cohort_sizes[ts] = main_cohort_sizes.get(ts, 0) + 1
+            
+            valid_cohort_timestamps = set(
+                ts for ts, size in main_cohort_sizes.items() 
+                if size >= min_cohort_size)
+        else:
+            valid_cohort_timestamps = None
+
         cohorts: Dict[str, Dict[str, Any]] = {}
         for user in users:
             if segment_by:
@@ -114,6 +126,9 @@ class CohortModule:
                 if seg_val not in segment_values:
                     continue
                 cohort_key = f"{self._truncate_time(user['first_active'], granularity)}_{seg_val}"
+                ts = self._truncate_time(user['first_active'], granularity)
+                if valid_cohort_timestamps and ts not in valid_cohort_timestamps:
+                    continue
             else:
                 cohort_key = str(self._truncate_time(user['first_active'], granularity))
             
@@ -129,12 +144,19 @@ class CohortModule:
             cohorts[cohort_key]["users"].add(user['user_id'])
             cohorts[cohort_key]["user_count"] += 1
 
-        cohort_list = sorted(
-            [c for c in cohorts.values() if c["user_count"] >= min_cohort_size],
-            key=lambda c: c["cohort_timestamp"]
-        )
-
-        filtered_count = len([c for c in cohorts.values() if c["user_count"] < min_cohort_size])
+        if segment_by:
+            cohort_list = sorted(
+                cohorts.values(),
+                key=lambda c: c["cohort_timestamp"]
+            )
+            if valid_cohort_timestamps is not None:
+                filtered_count = len(main_cohort_sizes) - len(valid_cohort_timestamps)
+        else:
+            cohort_list = sorted(
+                [c for c in cohorts.values() if c["user_count"] >= min_cohort_size],
+                key=lambda c: c["cohort_timestamp"]
+            )
+            filtered_count = len([c for c in cohorts.values() if c["user_count"] < min_cohort_size])
 
         matrix = []
         for cohort in cohort_list:

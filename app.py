@@ -213,13 +213,14 @@ def crossdevice_funnel():
         
         start_time = data.get('start_time')
         end_time = data.get('end_time')
+        require_sequence = data.get('require_sequence', True)
         
         if start_time:
             start_time = float(start_time)
         if end_time:
             end_time = float(end_time)
         
-        result = crossdevice_module.analyze_funnel(funnel_definition, start_time, end_time)
+        result = crossdevice_module.analyze_funnel(funnel_definition, start_time, end_time, require_sequence)
         return jsonify(result)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -351,11 +352,13 @@ def churn_run(rule_id):
         data = request.get_json() or {}
         check_data_integrity = data.get('check_data_integrity', True)
         data_lag_threshold_hours = data.get('data_lag_threshold_hours', 2)
+        now = data.get('now')
         
         result = churn_module.run_churn_detection(
             rule_id=rule_id,
             check_data_integrity=check_data_integrity,
-            data_lag_threshold_hours=data_lag_threshold_hours
+            data_lag_threshold_hours=data_lag_threshold_hours,
+            now=now
         )
         return jsonify(result)
     except Exception as e:
@@ -394,8 +397,10 @@ def churn_evaluate_recall():
     try:
         data = request.get_json() or {}
         rule_id = data.get('rule_id')
+        force_eval = data.get('force_eval', False)
+        now = data.get('now')
         
-        result = churn_module.evaluate_recall(rule_id)
+        result = churn_module.evaluate_recall(rule_id, now=now, force_eval=force_eval)
         return jsonify(result)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500

@@ -199,10 +199,21 @@ class MemoryStorage:
     def is_data_complete(self, hours: int = 2) -> bool:
         if self.last_event_timestamp is None:
             return False
-        cutoff = datetime.now().timestamp() - hours * 3600
+        now = datetime.now().timestamp()
+        if self.last_event_timestamp > now:
+            return True
+        cutoff = now - hours * 3600
         return self.last_event_timestamp >= cutoff
 
     def get_data_lag_hours(self) -> float:
         if self.last_event_timestamp is None:
             return float('inf')
-        return (datetime.now().timestamp() - self.last_event_timestamp) / 3600
+        now = datetime.now().timestamp()
+        if self.last_event_timestamp > now:
+            return 0.0
+        return (now - self.last_event_timestamp) / 3600
+
+    def get_effective_now(self) -> float:
+        if self.last_event_timestamp is None:
+            return datetime.now().timestamp()
+        return max(self.last_event_timestamp, datetime.now().timestamp())

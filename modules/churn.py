@@ -280,7 +280,8 @@ class ChurnModule:
 
     def run_churn_detection(self, rule_id: str, 
                             check_data_integrity: bool = True,
-                            data_lag_threshold_hours: int = 2) -> Dict[str, Any]:
+                            data_lag_threshold_hours: int = 2,
+                            now: float = None) -> Dict[str, Any]:
         rule = self.storage.get_churn_rule(rule_id)
         if not rule:
             return {"success": False, "error": f"Rule {rule_id} not found"}
@@ -299,7 +300,8 @@ class ChurnModule:
                     "skipped": True
                 }
         
-        now = datetime.now().timestamp()
+        if now is None:
+            now = self.storage.get_effective_now()
         conditions = rule['conditions']
         
         churn_users = []
@@ -415,15 +417,24 @@ class ChurnModule:
             "skipped_due_to_frequency": len(user_ids) - len(records)
         }
 
-    def evaluate_recall(self, rule_id: str = None) -> Dict[str, Any]:
-        now = datetime.now().timestamp()
+    def evaluate_recall(self, rule_id: str = None, 
+                        now: float = None,
+                        force_eval: bool = False) -> Dict[str, Any]:
+        if now is None:
+            now = self.storage.get_effective_now()
         history = self.storage.get_reach_history(rule_id=rule_id)
         
-        to_evaluate = [
-            h for h in history 
-            if not h.get('recall_evaluated') 
-            and now - h.get('reach_time', 0) >= 7 * 86400
-        ]
+        if force_eval:
+            to_evaluate = [
+                h for h in history 
+                if not h.get('recall_evaluated')
+            ]
+        else:
+            to_evaluate = [
+                h for h in history 
+                if not h.get('recall_evaluated') 
+                and now - h.get('reach_time', 0) >= 7 * 86400
+            ]
         
         updated = 0
         recalled = 0
